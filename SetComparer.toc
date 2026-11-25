@@ -1,0 +1,8 @@
+## Interface: 16001
+## Title: SetComparer
+## Notes: Adds comparison tooltips for your saved Equipment Manager sets when shift-hovering an item.
+## Author: Pardaleco
+## Version: 1.0.0
+## SavedVariables: SetComparerDB
+
+SetComparer.lua
