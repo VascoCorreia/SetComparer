@@ -21,6 +21,12 @@ When you shift-hover an item, SetComparer adds a comparison frame for each of yo
 
 New sets you save later start ticked.
 
+## Items in the bank
+
+A set frame for an item you can't reach right now (for example, it's in the bank and the bank is closed) still shows your exact copy, with its enchant and random suffix, once the addon has seen that item. Equipping it, having it in your bags, or opening the bank once is enough. These frames don't show durability, and they say "Binds when picked up" instead of "Soulbound".
+
+Items the addon has never seen show the base item with **(item never seen - base stats shown)**.
+
 ## Equipment Manager buttons
 
 Each set row has two icons, just left of the green "equipped" checkmark:

@@ -12,7 +12,7 @@ bit = {
 }
 
 SCREEN_W = 1920
-local calls = { SetBagItem = 0, SetInventoryItem = 0, SetItemByID = 0 }
+local calls = { SetBagItem = 0, SetInventoryItem = 0, SetItemByID = 0, SetHyperlink = 0 }
 
 local FrameMT = {}
 FrameMT.__index = FrameMT
@@ -82,6 +82,7 @@ end
 function FrameMT:SetInventoryItem(u, slot) calls.SetInventoryItem = calls.SetInventoryItem + 1; self.content = "inv:" .. slot end
 function FrameMT:SetBagItem(b, s) calls.SetBagItem = calls.SetBagItem + 1; self.content = "bag:" .. b .. ":" .. s end
 function FrameMT:SetItemByID(id) calls.SetItemByID = calls.SetItemByID + 1; self.content = "id:" .. id end
+function FrameMT:SetHyperlink(l) calls.SetHyperlink = calls.SetHyperlink + 1; self.content = "link:" .. l end
 function FrameMT:GetItem() return self.itemName, self.itemLink end
 function FrameMT:SetText(t) self.lines = { t } end
 -- button / generic frame methods
@@ -120,10 +121,10 @@ C_Item = { GetItemInfoInstant = function(l)
 	return id, "Armor", "Mail", ITEMS[id]
 end }
 
--- Item stats (GetItemStats): id -> { [statKey] = value }
+-- Item stats (GetItemStats): full link or id -> { [statKey] = value } (link wins)
 local STATS = {}
 function GetItemStats(l)
-	local s = STATS[tonumber(l:match("item:(%d+)"))]
+	local s = STATS[l] or STATS[tonumber(l:match("item:(%d+)"))]
 	if not s then return nil end
 	local copy = {}
 	for k, v in pairs(s) do copy[k] = v end
@@ -143,10 +144,14 @@ ITEM_MOD_INTELLECT_SHORT = "Intellect"
 ITEM_MOD_SPELL_POWER_SHORT = "Spell Power"
 ITEM_MOD_DAMAGE_PER_SECOND_SHORT = "Damage Per Second"
 
--- World state
+-- World state. Values are item IDs, or full item links (e.g. enchanted copies).
 local equipped, bags = {}, {}
-function GetInventoryItemLink(u, slot) return equipped[slot] and link(equipped[slot]) end
-function GetInventoryItemID(u, slot) return equipped[slot] end
+local function asLink(v) if type(v) == "string" then return v end; return v and link(v) end
+local function asID(v) if type(v) == "string" then return tonumber(v:match("item:(%d+)")) end; return v end
+-- Bank tab containers (6-11) are only readable with the bank open; older scenarios leave this on
+local bankReadable = true
+function GetInventoryItemLink(u, slot) return asLink(equipped[slot]) end
+function GetInventoryItemID(u, slot) return asID(equipped[slot]) end
 -- Container sizes: bags 0-4, reagent bag 5 (family 1, gear can't go there), bank tabs 6-11
 local bagSize = {}
 local function defaultBagSizes()
@@ -155,7 +160,10 @@ end
 defaultBagSizes()
 local used = { UseContainerItem = {} }
 C_Container = {
-	GetContainerItemLink = function(b, s) local id = bags[b .. ":" .. s]; return id and link(id) end,
+	GetContainerItemLink = function(b, s)
+		if b >= 6 and not bankReadable then return nil end
+		return asLink(bags[b .. ":" .. s])
+	end,
 	GetContainerNumSlots = function(b) return bagSize[b] or 0 end,
 	GetContainerNumFreeSlots = function(b)
 		local free = 0
@@ -248,6 +256,16 @@ Settings = {
 	OpenToCategory = function(id) settingsLog.opened = id end,
 }
 NUM_BAG_SLOTS = 4
+local now = 1700000000
+function time() return now end
+-- C_Timer.After(0, fn) is queued; flushTimers() runs it ("next frame")
+local timers = {}
+C_Timer = { After = function(_, fn) table.insert(timers, fn) end }
+local function flushTimers()
+	local q = timers
+	timers = {}
+	for _, fn in ipairs(q) do fn() end
+end
 local printed = {}
 function print(...) table.insert(printed, table.concat({ ... }, " ")) end
 
@@ -915,7 +933,7 @@ sets = { { id = 1, name = "Far", ids = { [5] = 400 } } }
 fire("EQUIPMENT_SETS_CHANGED")
 hover(300)
 local f = setTooltipFrames()[1]
-local hdr, note = indexOf(f.lines, ITEM_DELTA_DESCRIPTION), indexOf(f.lines, "(item not in reach - base stats shown)")
+local hdr, note = indexOf(f.lines, ITEM_DELTA_DESCRIPTION), indexOf(f.lines, "(item never seen - base stats shown)")
 check("40 id item gets the block, note stays last", hdr and note and hdr < note and note == #f.lines, table.concat(f.lines, " / "))
 uncached[400] = true
 SC.RefreshCompare()
@@ -958,6 +976,188 @@ compareCb:ToggleClick()
 check("42 greyed out when comparison off", statsCb:IsEnabled() == false and statsCb.label.color[1] == 0.5)
 compareCb:ToggleClick()
 check("42 enabled again", statsCb:IsEnabled() == true)
+
+---------------------------------------------------------------------------
+-- Saved item links (exact copy shown when the item is out of reach)
+---------------------------------------------------------------------------
+local ENCH200 = "|cff1eff00|Hitem:200:1503::::|h[Item 200]|h|r"
+local ENCH200B = "|cff1eff00|Hitem:200:1887::::|h[Item 200]|h|r"
+local ENCH400 = "|cff1eff00|Hitem:400:929::::|h[Item 400]|h|r"
+local function saved(setID, slot)
+	local t = SetComparerCharDB.savedItems[setID]
+	return t and t[slot]
+end
+local function savedReset()
+	reset()
+	flushTimers()
+	bankReadable = true
+	SetComparerCharDB.savedItems = {}
+	STATS = {}
+end
+local function lastLine(tt) return tt and tt.lines[#tt.lines] end
+
+-- 43. Seen in bags -> saved; later in the closed bank -> exact copy shown, no SetItemByID
+savedReset()
+check("43 savedItems initialised", type(SetComparerCharDB.savedItems) == "table")
+equipped[5] = 100
+bags["0:3"] = ENCH200
+sets = { { id = 1, name = "Tank", ids = { [5] = 200 }, locs = { [5] = LOC_BAG(0, 3) } } }
+fire("BAG_UPDATE_DELAYED"); fire("BAG_UPDATE_DELAYED"); fire("PLAYER_EQUIPMENT_CHANGED")
+check("43 burst of events schedules one snapshot", #timers == 1, #timers)
+check("43 nothing saved before the next frame", saved(1, 5) == nil)
+flushTimers()
+check("43 enchanted link saved", saved(1, 5) and saved(1, 5).link == ENCH200 and saved(1, 5).seen == now)
+check("43 only the set's slot saved", saved(1, 1) == nil and saved(1, 11) == nil)
+-- move it to the bank and close the bank
+bags["0:3"] = nil
+bags["7:6"] = ENCH200
+sets[1].locs[5] = LOC_BANK_TAB(2, 6)
+bankReadable = false
+fire("BAG_UPDATE_DELAYED"); flushTimers()
+check("43 unreadable item keeps its saved copy", saved(1, 5) and saved(1, 5).link == ENCH200)
+local idCalls = calls.SetItemByID
+hover(300)
+s = setTooltipFrames()
+check("43 frame shows the saved enchanted link", #s == 1 and s[1].content == "link:" .. ENCH200, describe(s))
+check("43 no SetItemByID call", calls.SetItemByID == idCalls)
+check("43 no note added to the saved copy", s[1] and #s[1].lines == 0, s[1] and table.concat(s[1].lines, " / "))
+now = now + 86400 * 5
+
+-- 44. Re-enchant: same item ID, new link seen in bags replaces the saved one
+bags["7:6"] = nil
+bags["0:3"] = ENCH200B
+sets[1].locs[5] = LOC_BAG(0, 3)
+fire("BAG_UPDATE_DELAYED"); flushTimers()
+check("44 new link replaces old", saved(1, 5) and saved(1, 5).link == ENCH200B and saved(1, 5).seen == now)
+check("44 snapshot change hid open frames", #setTooltipFrames() == 0)
+bags["0:3"] = nil
+bags["7:6"] = ENCH200B
+sets[1].locs[5] = LOC_BANK_TAB(2, 6)
+hover(300)
+s = setTooltipFrames()
+check("44 frame shows the re-enchanted link", #s == 1 and s[1].content == "link:" .. ENCH200B, describe(s))
+
+-- 45. Stat changes on a saved frame use the saved (enchanted) link, not the base item
+STATS[300] = { RESISTANCE0_NAME = 94, ITEM_MOD_STAMINA_SHORT = 2 }
+STATS[200] = { RESISTANCE0_NAME = 117 }
+STATS[ENCH200B] = { RESISTANCE0_NAME = 117, ITEM_MOD_STAMINA_SHORT = 10 }
+SC.RefreshCompare(); hover(300)
+f = setTooltipFrames()[1]
+check("45 deltas from the saved link", texts(statLines(f)) == "-23 Armor, -8 Stamina", texts(statLines(f)))
+local hdr45 = f and indexOf(f.lines, ITEM_DELTA_DESCRIPTION)
+check("45 stat block is the last thing on the frame", hdr45 and lastLine(f) == "-8 Stamina", f and table.concat(f.lines, " / "))
+
+-- 46. Uncached saved item redraws on GET_ITEM_INFO_RECEIVED
+local hl = calls.SetHyperlink
+fire("GET_ITEM_INFO_RECEIVED", 200)
+check("46 saved frame redrawn when item info arrives", calls.SetHyperlink == hl + 1, calls.SetHyperlink - hl)
+
+-- 47. Set re-saved with a different item for the slot: old copy dropped, ID fallback
+sets[1].ids[5] = 400
+sets[1].locs[5] = -1
+fire("EQUIPMENT_SETS_CHANGED"); flushTimers()
+check("47 old saved link dropped", saved(1, 5) == nil and SetComparerCharDB.savedItems[1] == nil)
+hover(300)
+s = setTooltipFrames()
+check("47 falls back to id:", #s == 1 and s[1].content == "id:400", describe(s))
+-- 48. Never-seen item keeps the old note
+check("48 never-seen item keeps base-stats note", lastLine(s[1]) == "(item never seen - base stats shown)", lastLine(s[1]))
+
+-- 49. Saved link with an outdated ID (set changed, snapshot not run yet) is ignored
+SetComparerCharDB.savedItems[1] = { [5] = { link = ENCH200, seen = now } }
+SC.RefreshCompare(); hover(300)
+s = setTooltipFrames()
+check("49 mismatching saved link not used", #s == 1 and s[1].content == "id:400", describe(s))
+
+-- 50. Deleted set: its saved items are removed; other sets keep theirs
+savedReset()
+bags["0:3"] = ENCH200; bags["0:4"] = ENCH400
+sets = {
+	{ id = 1, name = "Tank", ids = { [5] = 200 }, locs = { [5] = LOC_BAG(0, 3) } },
+	{ id = 2, name = "PvP", ids = { [5] = 400 }, locs = { [5] = LOC_BAG(0, 4) } },
+}
+fire("EQUIPMENT_SETS_CHANGED"); flushTimers()
+check("50 both sets saved", saved(1, 5) and saved(2, 5))
+table.remove(sets, 1)
+fire("EQUIPMENT_SETS_CHANGED"); flushTimers()
+check("50 deleted set's entry removed", SetComparerCharDB.savedItems[1] == nil)
+check("50 other set kept", saved(2, 5) and saved(2, 5).link == ENCH400)
+sets = {}
+fire("EQUIPMENT_SETS_CHANGED"); flushTimers()
+check("50 all sets deleted: nothing left", next(SetComparerCharDB.savedItems) == nil)
+
+-- 51. Snapshot on BANKFRAME_OPENED reads bank-tab containers
+savedReset()
+bankReset()
+flushTimers()
+bankReadable = false
+equipped[5] = 100
+bags["6:3"] = ENCH400
+sets = { { id = 2, name = "PvP", ids = { [5] = 400 }, locs = { [5] = LOC_BANK_TAB(1, 3) } } }
+fire("BAG_UPDATE_DELAYED"); flushTimers()
+check("51 bank closed: not saved yet", saved(2, 5) == nil)
+hover(300)
+check("51 bank closed, never seen: id fallback", setTooltipFrames()[1] and setTooltipFrames()[1].content == "id:400")
+bankReadable = true
+fire("BANKFRAME_OPENED")
+check("51 bank open schedules a snapshot", #timers == 1, #timers)
+flushTimers()
+check("51 bank item saved", saved(2, 5) and saved(2, 5).link == ENCH400)
+fire("BANKFRAME_CLOSED")
+bankReadable = false
+hover(300)
+s = setTooltipFrames()
+check("51 after closing the bank: saved copy shown", #s == 1 and s[1].content == "link:" .. ENCH400, describe(s))
+-- banker interaction event (clients without BANKFRAME_OPENED) also snapshots
+SetComparerCharDB.savedItems = {}
+bankReadable = true
+fire("PLAYER_INTERACTION_MANAGER_FRAME_SHOW", 5)
+check("51 other interaction: no snapshot", #timers == 0, #timers)
+fire("PLAYER_INTERACTION_MANAGER_FRAME_SHOW", Enum.PlayerInteractionType.Banker)
+flushTimers()
+check("51 banker interaction snapshots", saved(2, 5) and saved(2, 5).link == ENCH400)
+-- PLAYERBANKSLOTS_CHANGED too
+bags["6:3"] = ENCH200
+sets[1].ids[5] = 200
+fire("PLAYERBANKSLOTS_CHANGED"); flushTimers()
+check("51 PLAYERBANKSLOTS_CHANGED snapshots", saved(2, 5) and saved(2, 5).link == ENCH200)
+
+-- 52. Saved item with the same ID as the item worn in a compared slot: skipped
+savedReset()
+equipped[5] = 200
+sets = { { id = 1, name = "Tank", ids = { [5] = 200 }, locs = { [5] = LOC_BANK_TAB(2, 6) } } }
+SetComparerCharDB.savedItems[1] = { [5] = { link = ENCH200, seen = now } }
+bankReadable = false
+SC.RefreshCompare(); hover(300)
+check("52 saved copy of the worn item skipped", #setTooltipFrames() == 0, describe(setTooltipFrames()))
+
+-- 53. Same copy readable in one set and only saved for another: merged, shown live
+savedReset()
+equipped[5] = 100
+bags["0:3"] = ENCH200
+sets = {
+	{ id = 1, name = "PvP", ids = { [5] = 200 }, locs = { [5] = LOC_BANK_TAB(2, 6) } }, -- stale location
+	{ id = 2, name = "Tank", ids = { [5] = 200 }, locs = { [5] = LOC_BAG(0, 3) } },
+}
+SetComparerCharDB.savedItems[1] = { [5] = { link = ENCH200, seen = now } }
+bankReadable = false
+SC.RefreshCompare(); hover(300)
+s = setTooltipFrames()
+check("53 merged into one live frame", #s == 1 and s[1].content == "bag:0:3" and s[1].scHeader.text.text == "Set: PvP, Tank", describe(s))
+-- 54. PLAYER_LOGIN snapshots; without C_Timer the snapshot runs immediately
+savedReset()
+bags["0:3"] = ENCH200
+sets = { { id = 1, name = "Tank", ids = { [5] = 200 }, locs = { [5] = LOC_BAG(0, 3) } } }
+fire("PLAYER_LOGIN"); flushTimers()
+check("54 PLAYER_LOGIN snapshots", saved(1, 5) and saved(1, 5).link == ENCH200)
+SetComparerCharDB.savedItems = {}
+local realTimer = C_Timer
+C_Timer = nil
+fire("BAG_UPDATE_DELAYED")
+check("54 no C_Timer: snapshot runs at once", saved(1, 5) and saved(1, 5).link == ENCH200 and #timers == 0)
+C_Timer = realTimer
+check("54 SnapshotSets exposed, returns false when nothing changed", SC.SnapshotSets() == false)
+bankReadable = true
 
 io.write(("\n%d passed, %d failed\n"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

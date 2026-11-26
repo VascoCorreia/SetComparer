@@ -100,7 +100,9 @@ SetComparer.LinkItemID = LinkItemID
 
 -- Work out where a set's item for an inventory slot lives.
 -- Returns nil when the set has nothing (or ignores) that slot, else a table:
---   { kind = "inv"|"bag"|"id", itemID, link, slot, bag, worn }
+--   { kind = "inv"|"bag"|"saved"|"id", itemID, link, slot, bag, worn, seen }
+-- "saved": not readable right now, but we saved its exact link earlier (see SnapshotSets)
+-- "id": not readable and never seen, only the generic item ID is known
 local function ResolveSetItem(setID, invSlot)
 	local ids = C_EquipmentSet.GetItemIDs(setID)
 	local locs = C_EquipmentSet.GetItemLocations(setID)
@@ -130,6 +132,11 @@ local function ResolveSetItem(setID, invSlot)
 	end
 
 	if itemID then
+		local saved = SetComparerCharDB and SetComparerCharDB.savedItems
+		saved = saved and saved[setID] and saved[setID][invSlot]
+		if saved and LinkItemID(saved.link) == itemID then
+			return { kind = "saved", itemID = itemID, link = saved.link, seen = saved.seen }
+		end
 		return { kind = "id", itemID = itemID }
 	end
 	return nil
@@ -144,7 +151,7 @@ local isOurs = {}     -- [frame] = true
 local hookedFrames = {}
 local activeOwner     -- tooltip the set frames are currently attached to
 local activeKey       -- cache key of what is currently displayed
-local hasIDFallback   -- displayed something via SetItemByID (may need refresh)
+local needsInfoRefresh -- displayed an item that may not be cached yet (redraw on GET_ITEM_INFO_RECEIVED)
 
 local function CreateHeader(tt)
 	local h = CreateFrame("Frame", nil, tt, BackdropTemplateMixin and "BackdropTemplate" or nil)
@@ -184,7 +191,7 @@ local function HideAll()
 	end
 	activeOwner = nil
 	activeKey = nil
-	hasIDFallback = nil
+	needsInfoRefresh = nil
 end
 
 ---------------------------------------------------------------------------
@@ -274,6 +281,67 @@ function SetComparer.SetStatChangesEnabled(enabled)
 	SetComparerDB.showStatChanges = enabled and true or false
 	SetComparer.RefreshCompare()
 end
+
+---------------------------------------------------------------------------
+-- Saved item links: remember each set item's exact copy (enchant, suffix, gems)
+-- while it is readable, so it can still be shown once it is out of reach (bank closed)
+---------------------------------------------------------------------------
+
+-- SetComparerCharDB.savedItems[setID][invSlot] = { link = "<item link>", seen = time() }
+local function SnapshotSets()
+	local db = SetComparerCharDB and SetComparerCharDB.savedItems
+	if not db or not C_EquipmentSet then return false end
+	local changed = false
+	local exists = {}
+	local now = time()
+	for _, setID in ipairs(C_EquipmentSet.GetEquipmentSetIDs() or {}) do
+		exists[setID] = true
+		local ids = C_EquipmentSet.GetItemIDs(setID) or {}
+		local saved = db[setID] or {}
+		for slot = 1, 19 do
+			local expected = ids[slot]
+			if expected == 0 then expected = nil end
+			local entry = saved[slot]
+			-- Slot emptied, or the set now uses a different item: forget the old copy
+			if entry and LinkItemID(entry.link) ~= expected then
+				saved[slot], entry, changed = nil, nil, true
+			end
+			if expected then
+				local item = ResolveSetItem(setID, slot)
+				if item and (item.kind == "inv" or item.kind == "bag") and item.link then
+					if not entry or entry.link ~= item.link then changed = true end
+					saved[slot] = { link = item.link, seen = now }
+				end
+			end
+		end
+		db[setID] = next(saved) and saved or nil
+	end
+	for setID in pairs(db) do
+		if not exists[setID] then
+			db[setID], changed = nil, true
+		end
+	end
+	if changed then SetComparer.RefreshCompare() end
+	return changed
+end
+SetComparer.SnapshotSets = SnapshotSets
+
+-- Several triggering events fire in bursts: run the snapshot once, on the next frame
+local snapshotPending
+local function RunSnapshot()
+	snapshotPending = nil
+	SnapshotSets()
+end
+local function ScheduleSnapshot()
+	if snapshotPending then return end
+	if C_Timer and C_Timer.After then
+		snapshotPending = true
+		C_Timer.After(0, RunSnapshot)
+	else
+		SnapshotSets()
+	end
+end
+
 
 ---------------------------------------------------------------------------
 -- Stat changes ("If you replace this item, ...") for set frames
@@ -377,7 +445,7 @@ local function Update(owner)
 					for _, s in ipairs(slots) do
 						if item.slot == s then skip = true end
 					end
-				elseif item.kind == "id" then
+				elseif item.kind == "id" or item.kind == "saved" then
 					for _, s in ipairs(slots) do
 						if GetInventoryItemID("player", s) == item.itemID then skip = true end
 					end
@@ -393,6 +461,8 @@ local function Update(owner)
 					entry = { item = item, names = {}, slot = slot }
 					byItem[itemKey] = entry
 					entries[#entries + 1] = entry
+				elseif entry.item.kind == "saved" and item.kind ~= "saved" then
+					entry.item = item -- same copy is readable via another set: show it live
 				end
 				local label = setName or "?"
 				if #slots > 1 and SLOT_LABELS[slot] then
@@ -411,7 +481,7 @@ local function Update(owner)
 	end
 
 	local shown = {}
-	hasIDFallback = nil
+	needsInfoRefresh = nil
 	local scale = owner:GetScale()
 	local showStats = SetComparerDB.showStatChanges ~= false
 	for i, entry in ipairs(entries) do
@@ -426,16 +496,19 @@ local function Update(owner)
 		elseif item.kind == "bag" then
 			tt:SetBagItem(item.bag, item.slot)
 			if showStats then AddStatDelta(tt, link, item.link) end
-		else
+		elseif item.kind == "saved" then
+			tt:SetHyperlink(item.link)
+			needsInfoRefresh = true
+			if showStats then AddStatDelta(tt, link, item.link) end		else
 			tt:SetItemByID(item.itemID)
-			hasIDFallback = true
+			needsInfoRefresh = true
 			if showStats then
 				local getInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
 				local setLink = getInfo and select(2, getInfo(item.itemID))
 				-- Not cached yet: GET_ITEM_INFO_RECEIVED redraws once it is
 				if setLink then AddStatDelta(tt, link, setLink) end
 			end
-			tt:AddLine("(item not in reach - base stats shown)", 0.6, 0.6, 0.6)
+			tt:AddLine("(item never seen - base stats shown)", 0.6, 0.6, 0.6)
 		end
 		tt.scHeader.text:SetText("Set: " .. table.concat(entry.names, ", "))
 		tt.scHeader:SetWidth(tt.scHeader.text:GetStringWidth() + 20)
@@ -494,6 +567,20 @@ events:RegisterEvent("EQUIPMENT_SETS_CHANGED")
 events:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
 events:RegisterEvent("BAG_UPDATE_DELAYED")
 events:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+events:RegisterEvent("PLAYER_LOGIN")
+for _, ev in ipairs({ "BANKFRAME_OPENED", "PLAYERBANKSLOTS_CHANGED", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" }) do
+	pcall(events.RegisterEvent, events, ev) -- not every client has every event
+end
+
+-- Events after which a set's items may be readable (or different): re-save their links
+local SNAPSHOT_EVENTS = {
+	PLAYER_LOGIN = true, -- sets and items are loaded by now (ADDON_LOADED is too early)
+	EQUIPMENT_SETS_CHANGED = true,
+	PLAYER_EQUIPMENT_CHANGED = true,
+	BAG_UPDATE_DELAYED = true,
+	BANKFRAME_OPENED = true,
+	PLAYERBANKSLOTS_CHANGED = true,
+}
 
 events:SetScript("OnEvent", function(_, event, arg1)
 	if event == "ADDON_LOADED" then
@@ -505,6 +592,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
 			-- Per character: set IDs are per character. Sets not listed here are compared.
 			SetComparerCharDB = SetComparerCharDB or {}
 			SetComparerCharDB.hiddenSets = SetComparerCharDB.hiddenSets or {}
+			SetComparerCharDB.savedItems = SetComparerCharDB.savedItems or {}
 		end
 	elseif event == "MODIFIER_STATE_CHANGED" then
 		if pool[1] and pool[1]:IsShown() and not IsModifiedClick("COMPAREITEMS")
@@ -512,13 +600,20 @@ events:SetScript("OnEvent", function(_, event, arg1)
 			HideAll()
 		end
 	elseif event == "GET_ITEM_INFO_RECEIVED" then
-		if hasIDFallback and activeOwner and activeOwner:IsShown() then
+		if needsInfoRefresh and activeOwner and activeOwner:IsShown() then
 			local owner = activeOwner
 			activeKey = nil
 			Update(owner)
 		end
+	elseif event == "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" then
+		local banker = Enum and Enum.PlayerInteractionType and Enum.PlayerInteractionType.Banker
+		if banker and arg1 == banker then
+			dataVersion = dataVersion + 1
+			ScheduleSnapshot()
+		end
 	else
 		dataVersion = dataVersion + 1
+		if SNAPSHOT_EVENTS[event] then ScheduleSnapshot() end
 	end
 end)
 
