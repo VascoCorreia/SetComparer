@@ -59,13 +59,20 @@ local compareCheck = CreateCheck("Show set comparison frames",
 	end)
 compareCheck:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", -2, -16)
 
+local statsCheck = CreateCheck("Show stat changes on set frames",
+	"Add the \"If you replace this item...\" stat changes to each set's comparison frame.",
+	function(_, checked)
+		SetComparer.SetStatChangesEnabled(checked)
+	end)
+statsCheck:SetPoint("TOPLEFT", compareCheck, "BOTTOMLEFT", 0, -6)
+
 local bankCheck = CreateCheck("Show bank buttons in the Equipment Manager",
 	"Show the \"Put items in bank\" and \"Take items from bank\" buttons on each set in the Equipment Manager.",
 	function(_, checked)
 		SetComparerDB.showBankButtons = checked
 		if SetComparer.DecorateAllRows then SetComparer.DecorateAllRows() end
 	end)
-bankCheck:SetPoint("TOPLEFT", compareCheck, "BOTTOMLEFT", 0, -6)
+bankCheck:SetPoint("TOPLEFT", statsCheck, "BOTTOMLEFT", 0, -6)
 
 local setsHeader = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
 setsHeader:SetPoint("TOPLEFT", bankCheck, "BOTTOMLEFT", 2, -20)
@@ -119,6 +126,8 @@ end
 function SetComparer.RefreshOptions()
 	if not SetComparerDB then return end
 	compareCheck:SetChecked(SetComparerDB.enabled)
+	statsCheck:SetChecked(SetComparerDB.showStatChanges ~= false)
+	SetCheckEnabled(statsCheck, SetComparerDB.enabled)
 	bankCheck:SetChecked(SetComparerDB.showBankButtons ~= false)
 	RefreshSetList()
 end

@@ -73,8 +73,12 @@ function FrameMT:IsEnabled() return self.enabled ~= false end
 function FrameMT:ToggleClick() self.checked = not self.checked; self.scripts.OnClick(self) end
 -- tooltip methods
 function FrameMT:SetOwner(o) self.owner = o end
-function FrameMT:ClearLines() self.lines = {}; self.content = nil end
-function FrameMT:AddLine(t) table.insert(self.lines, t) end
+function FrameMT:ClearLines() self.lines = {}; self.lineColors = {}; self.content = nil end
+function FrameMT:AddLine(t, r, g, b)
+	table.insert(self.lines, t)
+	self.lineColors = self.lineColors or {}
+	self.lineColors[#self.lines] = { r, g, b }
+end
 function FrameMT:SetInventoryItem(u, slot) calls.SetInventoryItem = calls.SetInventoryItem + 1; self.content = "inv:" .. slot end
 function FrameMT:SetBagItem(b, s) calls.SetBagItem = calls.SetBagItem + 1; self.content = "bag:" .. b .. ":" .. s end
 function FrameMT:SetItemByID(id) calls.SetItemByID = calls.SetItemByID + 1; self.content = "id:" .. id end
@@ -115,6 +119,29 @@ C_Item = { GetItemInfoInstant = function(l)
 	local id = tonumber(l:match("item:(%d+)"))
 	return id, "Armor", "Mail", ITEMS[id]
 end }
+
+-- Item stats (GetItemStats): id -> { [statKey] = value }
+local STATS = {}
+function GetItemStats(l)
+	local s = STATS[tonumber(l:match("item:(%d+)"))]
+	if not s then return nil end
+	local copy = {}
+	for k, v in pairs(s) do copy[k] = v end
+	return copy
+end
+local uncached = {} -- item IDs GetItemInfo doesn't know yet
+function GetItemInfo(id)
+	if uncached[id] then return nil end
+	return "Item " .. id, link(id)
+end
+ITEM_DELTA_DESCRIPTION = "If you replace this item, the following stat changes will occur:"
+RESISTANCE0_NAME = "Armor"
+ITEM_MOD_STRENGTH_SHORT = "Strength"
+ITEM_MOD_AGILITY_SHORT = "Agility"
+ITEM_MOD_STAMINA_SHORT = "Stamina"
+ITEM_MOD_INTELLECT_SHORT = "Intellect"
+ITEM_MOD_SPELL_POWER_SHORT = "Spell Power"
+ITEM_MOD_DAMAGE_PER_SECOND_SHORT = "Damage Per Second"
 
 -- World state
 local equipped, bags = {}, {}
@@ -830,6 +857,107 @@ initRow(rowE, { setID = 1 })
 check("36 stay hidden when rows refresh", not rowE.scBankBtn:IsShown())
 bankCb:ToggleClick()
 check("36 buttons back", rowE.scBankBtn:IsShown() and rowE.scDepositBtn:IsShown())
+
+---------------------------------------------------------------------------
+-- Stat changes on set frames
+---------------------------------------------------------------------------
+local function indexOf(lines, text)
+	for i, l in ipairs(lines or {}) do if l == text then return i end end
+end
+local function statLines(tt)
+	local start = indexOf(tt.lines, ITEM_DELTA_DESCRIPTION)
+	if not start then return nil end
+	local out = {}
+	for i = start + 1, #tt.lines do
+		if tt.lines[i]:match("^[+-]") then
+			out[#out + 1] = { text = tt.lines[i], color = tt.lineColors[i] }
+		end
+	end
+	return out
+end
+
+-- 37. Delta block: hovered item minus set item, ordered, colored
+reset()
+equipped[5] = 100
+bags["0:3"] = 200
+sets = { { id = 1, name = "Tank", ids = { [5] = 200 }, locs = { [5] = LOC_BAG(0, 3) } } }
+STATS[300] = { RESISTANCE0_NAME = 94, ITEM_MOD_STRENGTH_SHORT = 4, ITEM_MOD_STAMINA_SHORT = 2 }
+STATS[200] = { RESISTANCE0_NAME = 117, ITEM_MOD_STRENGTH_SHORT = 7, ITEM_MOD_STAMINA_SHORT = 6, ITEM_MOD_SPELL_POWER_SHORT = 3 }
+check("37 default on", SetComparerDB.showStatChanges == true)
+hover(300)
+s = setTooltipFrames()
+local sl = s[1] and statLines(s[1])
+local function texts(list) local t = {}; for _, x in ipairs(list or {}) do t[#t + 1] = x.text end; return table.concat(t, ", ") end
+check("37 header present", sl ~= nil, s[1] and table.concat(s[1].lines, " / "))
+check("37 deltas in order", texts(sl) == "-23 Armor, -3 Strength, -4 Stamina, -3 Spell Power", texts(sl))
+check("37 losses are red", sl and sl[1] and sl[1].color[1] == 1 and sl[1].color[2] == 0)
+
+-- 38. Gains green, unknown stat keys skipped, fractional DPS formatted
+STATS[200] = { RESISTANCE0_NAME = 90, ITEM_MOD_DAMAGE_PER_SECOND_SHORT = 10.25, ITEM_MOD_UNKNOWN_THING = 5 }
+STATS[300] = { RESISTANCE0_NAME = 94, ITEM_MOD_DAMAGE_PER_SECOND_SHORT = 12.75, ITEM_MOD_UNKNOWN_THING = 1 }
+SC.RefreshCompare()
+hover(300)
+sl = statLines(setTooltipFrames()[1])
+check("38 gains and DPS", texts(sl) == "+4 Armor, +2.5 Damage Per Second", texts(sl))
+check("38 gains are green", sl and sl[1] and sl[1].color[1] == 0 and sl[1].color[2] == 1)
+
+-- 39. Identical stats: no block at all
+STATS[200] = { RESISTANCE0_NAME = 94 }
+STATS[300] = { RESISTANCE0_NAME = 94 }
+SC.RefreshCompare()
+hover(300)
+check("39 no block when nothing changes", indexOf(setTooltipFrames()[1].lines, ITEM_DELTA_DESCRIPTION) == nil)
+
+-- 40. ID fallback: block before the "not in reach" note; skipped while uncached
+STATS[300] = { RESISTANCE0_NAME = 94, ITEM_MOD_STAMINA_SHORT = 2 }
+STATS[400] = { RESISTANCE0_NAME = 50 }
+sets = { { id = 1, name = "Far", ids = { [5] = 400 } } }
+fire("EQUIPMENT_SETS_CHANGED")
+hover(300)
+local f = setTooltipFrames()[1]
+local hdr, note = indexOf(f.lines, ITEM_DELTA_DESCRIPTION), indexOf(f.lines, "(item not in reach - base stats shown)")
+check("40 id item gets the block, note stays last", hdr and note and hdr < note and note == #f.lines, table.concat(f.lines, " / "))
+uncached[400] = true
+SC.RefreshCompare()
+hover(300)
+f = setTooltipFrames()[1]
+check("40 uncached id item: no block, still shown", f and f.content == "id:400" and indexOf(f.lines, ITEM_DELTA_DESCRIPTION) == nil)
+uncached[400] = nil
+fire("GET_ITEM_INFO_RECEIVED", 400)
+f = setTooltipFrames()[1]
+check("40 block appears once info arrives", f and indexOf(f.lines, ITEM_DELTA_DESCRIPTION) ~= nil)
+
+-- 41. Options checkbox turns the block off for every set frame
+reset()
+equipped[5] = 100
+bags["0:3"] = 200; bags["0:4"] = 400
+sets = {
+	{ id = 1, name = "Tank", ids = { [5] = 200 }, locs = { [5] = LOC_BAG(0, 3) } },
+	{ id = 2, name = "PvP", ids = { [5] = 400 }, locs = { [5] = LOC_BAG(0, 4) } },
+}
+STATS[200] = { RESISTANCE0_NAME = 117 }
+openPanel()
+local statsCb = checkByLabel("Show stat changes on set frames")
+check("41 checkbox in panel, ticked", statsCb ~= nil and statsCb:GetChecked() == true)
+hover(300)
+s = setTooltipFrames()
+check("41 both frames have the block", #s == 2 and statLines(s[1]) and statLines(s[2]))
+statsCb:ToggleClick()
+check("41 setting saved", SetComparerDB.showStatChanges == false)
+check("41 open frames hidden after change", #setTooltipFrames() == 0)
+hover(300)
+s = setTooltipFrames()
+check("41 no frame has the block", #s == 2 and not statLines(s[1]) and not statLines(s[2]), describe(s))
+statsCb:ToggleClick()
+hover(300)
+s = setTooltipFrames()
+check("41 back on", #s == 2 and statLines(s[1]) ~= nil)
+
+-- 42. Greyed out while comparison frames are off
+compareCb:ToggleClick()
+check("42 greyed out when comparison off", statsCb:IsEnabled() == false and statsCb.label.color[1] == 0.5)
+compareCb:ToggleClick()
+check("42 enabled again", statsCb:IsEnabled() == true)
 
 io.write(("\n%d passed, %d failed\n"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

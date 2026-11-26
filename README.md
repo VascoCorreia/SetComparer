@@ -15,6 +15,7 @@ When you shift-hover an item, SetComparer adds a comparison frame for each of yo
 | Setting | Saved for | Default |
 |---|---|---|
 | **Show set comparison frames**: extra frames when shift-hovering an item | all characters | on |
+| **Show stat changes on set frames**: the "If you replace this item..." stat differences on each set frame | all characters | on |
 | **Show bank buttons in the Equipment Manager**: chest and bag icons on each set | all characters | on |
 | **Sets to compare against**: one checkbox per saved set | this character | all ticked |
 

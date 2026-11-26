@@ -270,6 +270,80 @@ function SetComparer.RefreshCompare()
 	HideAll()
 end
 
+function SetComparer.SetStatChangesEnabled(enabled)
+	SetComparerDB.showStatChanges = enabled and true or false
+	SetComparer.RefreshCompare()
+end
+
+---------------------------------------------------------------------------
+-- Stat changes ("If you replace this item, ...") for set frames
+---------------------------------------------------------------------------
+
+-- Same order as the default compare tooltip; anything else follows alphabetically
+local STAT_ORDER = {
+	"RESISTANCE0_NAME",
+	"ITEM_MOD_AGILITY_SHORT", "ITEM_MOD_STRENGTH_SHORT", "ITEM_MOD_INTELLECT_SHORT",
+	"ITEM_MOD_SPIRIT_SHORT", "ITEM_MOD_STAMINA_SHORT",
+	"ITEM_MOD_SPELL_POWER_SHORT", "ITEM_MOD_ATTACK_POWER_SHORT",
+	"ITEM_MOD_HIT_RATING_SHORT", "ITEM_MOD_CRIT_RATING_SHORT",
+	"ITEM_MOD_DAMAGE_PER_SECOND_SHORT",
+}
+local STAT_RANK = {}
+for i, key in ipairs(STAT_ORDER) do STAT_RANK[key] = i end
+
+local function GetStats(link)
+	if not link then return {} end
+	local stats
+	if C_Item and C_Item.GetItemStats then
+		stats = C_Item.GetItemStats(link)
+	elseif GetItemStats then
+		stats = GetItemStats(link)
+	end
+	return stats or {}
+end
+
+local function FormatDelta(v)
+	if v == math.floor(v) then return string.format("%+d", v) end
+	return string.format("%+.1f", v)
+end
+
+-- Appends the stat difference of wearing hoveredLink instead of setLink
+local function AddStatDelta(tt, hoveredLink, setLink)
+	local new, old = GetStats(hoveredLink), GetStats(setLink)
+	local deltas = {}
+	local seen = {}
+	for _, t in ipairs({ new, old }) do
+		for key in pairs(t) do
+			if not seen[key] then
+				seen[key] = true
+				local d = (tonumber(new[key]) or 0) - (tonumber(old[key]) or 0)
+				local name = _G[key]
+				if d ~= 0 and type(name) == "string" then
+					deltas[#deltas + 1] = { key = key, name = name, value = d }
+				end
+			end
+		end
+	end
+	if #deltas == 0 then return end
+
+	table.sort(deltas, function(a, b)
+		local ra, rb = STAT_RANK[a.key], STAT_RANK[b.key]
+		if ra and rb then return ra < rb end
+		if ra or rb then return ra ~= nil end
+		return a.name < b.name
+	end)
+
+	tt:AddLine(" ")
+	tt:AddLine(ITEM_DELTA_DESCRIPTION or "If you replace this item, the following stat changes will occur:", 1, 0.82, 0, true)
+	for _, d in ipairs(deltas) do
+		if d.value > 0 then
+			tt:AddLine(FormatDelta(d.value) .. " " .. d.name, 0, 1, 0)
+		else
+			tt:AddLine(FormatDelta(d.value) .. " " .. d.name, 1, 0, 0)
+		end
+	end
+end
+
 local function Update(owner)
 	if not (SetComparerDB and SetComparerDB.enabled) then return end
 	if not owner or isOurs[owner] or not owner.GetItem then return end
@@ -339,6 +413,7 @@ local function Update(owner)
 	local shown = {}
 	hasIDFallback = nil
 	local scale = owner:GetScale()
+	local showStats = SetComparerDB.showStatChanges ~= false
 	for i, entry in ipairs(entries) do
 		local tt = GetTooltip(i)
 		tt:SetScale(scale)
@@ -347,12 +422,20 @@ local function Update(owner)
 		local item = entry.item
 		if item.kind == "inv" then
 			tt:SetInventoryItem("player", item.slot)
+			if showStats then AddStatDelta(tt, link, item.link) end
 		elseif item.kind == "bag" then
 			tt:SetBagItem(item.bag, item.slot)
+			if showStats then AddStatDelta(tt, link, item.link) end
 		else
 			tt:SetItemByID(item.itemID)
-			tt:AddLine("(item not in reach - base stats shown)", 0.6, 0.6, 0.6)
 			hasIDFallback = true
+			if showStats then
+				local getInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+				local setLink = getInfo and select(2, getInfo(item.itemID))
+				-- Not cached yet: GET_ITEM_INFO_RECEIVED redraws once it is
+				if setLink then AddStatDelta(tt, link, setLink) end
+			end
+			tt:AddLine("(item not in reach - base stats shown)", 0.6, 0.6, 0.6)
 		end
 		tt.scHeader.text:SetText("Set: " .. table.concat(entry.names, ", "))
 		tt.scHeader:SetWidth(tt.scHeader.text:GetStringWidth() + 20)
@@ -418,6 +501,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
 			SetComparerDB = SetComparerDB or {}
 			if SetComparerDB.enabled == nil then SetComparerDB.enabled = true end
 			if SetComparerDB.showBankButtons == nil then SetComparerDB.showBankButtons = true end
+			if SetComparerDB.showStatChanges == nil then SetComparerDB.showStatChanges = true end
 			-- Per character: set IDs are per character. Sets not listed here are compared.
 			SetComparerCharDB = SetComparerCharDB or {}
 			SetComparerCharDB.hiddenSets = SetComparerCharDB.hiddenSets or {}
