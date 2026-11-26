@@ -282,6 +282,11 @@ function SetComparer.SetStatChangesEnabled(enabled)
 	SetComparer.RefreshCompare()
 end
 
+function SetComparer.SetCompactEnabled(enabled)
+	SetComparerDB.compactFrames = enabled and true or false
+	SetComparer.RefreshCompare()
+end
+
 ---------------------------------------------------------------------------
 -- Saved item links: remember each set item's exact copy (enchant, suffix, gems)
 -- while it is readable, so it can still be shown once it is out of reach (bank closed)
@@ -375,8 +380,8 @@ local function FormatDelta(v)
 	return string.format("%+.1f", v)
 end
 
--- Appends the stat difference of wearing hoveredLink instead of setLink
-local function AddStatDelta(tt, hoveredLink, setLink)
+-- Stat difference of wearing hoveredLink instead of setLink, sorted like the default compare
+local function GetStatDeltas(hoveredLink, setLink)
 	local new, old = GetStats(hoveredLink), GetStats(setLink)
 	local deltas = {}
 	local seen = {}
@@ -392,17 +397,27 @@ local function AddStatDelta(tt, hoveredLink, setLink)
 			end
 		end
 	end
-	if #deltas == 0 then return end
-
 	table.sort(deltas, function(a, b)
 		local ra, rb = STAT_RANK[a.key], STAT_RANK[b.key]
 		if ra and rb then return ra < rb end
 		if ra or rb then return ra ~= nil end
 		return a.name < b.name
 	end)
+	return deltas
+end
 
-	tt:AddLine(" ")
-	tt:AddLine(ITEM_DELTA_DESCRIPTION or "If you replace this item, the following stat changes will occur:", 1, 0.82, 0, true)
+-- Appends the stat changes. Compact: just the +/- lines (or "No stat changes"), no sentence.
+local function AddStatDelta(tt, hoveredLink, setLink, compact)
+	local deltas = GetStatDeltas(hoveredLink, setLink)
+	if #deltas == 0 then
+		if compact then tt:AddLine("No stat changes", 0.6, 0.6, 0.6) end
+		return
+	end
+
+	if not compact then
+		tt:AddLine(" ")
+		tt:AddLine(ITEM_DELTA_DESCRIPTION or "If you replace this item, the following stat changes will occur:", 1, 0.82, 0, true)
+	end
 	for _, d in ipairs(deltas) do
 		if d.value > 0 then
 			tt:AddLine(FormatDelta(d.value) .. " " .. d.name, 0, 1, 0)
@@ -410,6 +425,18 @@ local function AddStatDelta(tt, hoveredLink, setLink)
 			tt:AddLine(FormatDelta(d.value) .. " " .. d.name, 1, 0, 0)
 		end
 	end
+end
+
+-- "[Name]" link -> colored "Name" line, keeping whatever color escape the link uses
+local function ItemNameLine(link)
+	local prefix, name = link:match("^(.-)|H.-|h%[(.-)%]|h")
+	if not name then return link end
+	return prefix .. name .. "|r"
+end
+
+local function GetItemLinkByID(itemID)
+	local getInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+	return getInfo and select(2, getInfo(itemID))
 end
 
 local function Update(owner)
@@ -484,13 +511,27 @@ local function Update(owner)
 	needsInfoRefresh = nil
 	local scale = owner:GetScale()
 	local showStats = SetComparerDB.showStatChanges ~= false
+	local compact = SetComparerDB.compactFrames
 	for i, entry in ipairs(entries) do
 		local tt = GetTooltip(i)
 		tt:SetScale(scale)
 		tt:SetOwner(owner, "ANCHOR_NONE")
 		tt:ClearLines()
 		local item = entry.item
-		if item.kind == "inv" then
+		if compact then
+			-- Only the item name and the stat changes
+			local setLink = item.link
+			if item.kind == "saved" or item.kind == "id" then needsInfoRefresh = true end
+			if not setLink and item.itemID then
+				setLink = GetItemLinkByID(item.itemID) -- not cached yet: GET_ITEM_INFO_RECEIVED redraws
+			end
+			if setLink then
+				tt:AddLine(ItemNameLine(setLink))
+				if showStats then AddStatDelta(tt, link, setLink, true) end
+			else
+				tt:AddLine(RETRIEVING_ITEM_INFO or "Retrieving item information", 0.6, 0.6, 0.6)
+			end
+		elseif item.kind == "inv" then
 			tt:SetInventoryItem("player", item.slot)
 			if showStats then AddStatDelta(tt, link, item.link) end
 		elseif item.kind == "bag" then
@@ -499,12 +540,12 @@ local function Update(owner)
 		elseif item.kind == "saved" then
 			tt:SetHyperlink(item.link)
 			needsInfoRefresh = true
-			if showStats then AddStatDelta(tt, link, item.link) end		else
+			if showStats then AddStatDelta(tt, link, item.link) end
+		else
 			tt:SetItemByID(item.itemID)
 			needsInfoRefresh = true
 			if showStats then
-				local getInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
-				local setLink = getInfo and select(2, getInfo(item.itemID))
+				local setLink = GetItemLinkByID(item.itemID)
 				-- Not cached yet: GET_ITEM_INFO_RECEIVED redraws once it is
 				if setLink then AddStatDelta(tt, link, setLink) end
 			end
@@ -589,6 +630,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
 			if SetComparerDB.enabled == nil then SetComparerDB.enabled = true end
 			if SetComparerDB.showBankButtons == nil then SetComparerDB.showBankButtons = true end
 			if SetComparerDB.showStatChanges == nil then SetComparerDB.showStatChanges = true end
+			if SetComparerDB.compactFrames == nil then SetComparerDB.compactFrames = false end
 			-- Per character: set IDs are per character. Sets not listed here are compared.
 			SetComparerCharDB = SetComparerCharDB or {}
 			SetComparerCharDB.hiddenSets = SetComparerCharDB.hiddenSets or {}

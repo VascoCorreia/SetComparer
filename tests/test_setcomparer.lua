@@ -1159,5 +1159,86 @@ C_Timer = realTimer
 check("54 SnapshotSets exposed, returns false when nothing changed", SC.SnapshotSets() == false)
 bankReadable = true
 
+---------------------------------------------------------------------------
+-- Compact set frames (only the item name and stat changes)
+---------------------------------------------------------------------------
+local function joined(tt) return tt and table.concat(tt.lines, " / ") end
+
+-- 55. Checkbox turns compact on; bag item frame is just name + deltas, set tab kept
+savedReset()
+equipped[5] = 100
+bags["0:3"] = 200
+sets = { { id = 1, name = "Tank", ids = { [5] = 200 }, locs = { [5] = LOC_BAG(0, 3) } } }
+STATS[300] = { RESISTANCE0_NAME = 94, ITEM_MOD_STRENGTH_SHORT = 4 }
+STATS[200] = { RESISTANCE0_NAME = 117, ITEM_MOD_STRENGTH_SHORT = 7 }
+openPanel()
+local compactCb = checkByLabel("Compact set frames")
+check("55 checkbox in panel, off by default", compactCb ~= nil and not compactCb:GetChecked() and SetComparerDB.compactFrames == false)
+hover(300)
+check("55 full frame before", #setTooltipFrames() == 1 and setTooltipFrames()[1].content == "bag:0:3")
+compactCb:ToggleClick()
+check("55 setting saved", SetComparerDB.compactFrames == true)
+check("55 open frames hidden after change", #setTooltipFrames() == 0)
+local bagCalls = calls.SetBagItem
+hover(300)
+f = setTooltipFrames()[1]
+check("55 no full tooltip drawn", f and f.content == nil and calls.SetBagItem == bagCalls, f and f.content)
+check("55 only name and deltas", joined(f) == "|cffffffffItem 200|r / -23 Armor / -3 Strength", joined(f))
+check("55 deltas keep their colors", f and f.lineColors[2][1] == 1 and f.lineColors[2][2] == 0)
+check("55 set tab kept", f and f.scHeader.text.text == "Set: Tank")
+
+-- 56. Identical stats: name + "No stat changes"
+STATS[200] = { RESISTANCE0_NAME = 94 }
+STATS[300] = { RESISTANCE0_NAME = 94 }
+SC.RefreshCompare(); hover(300)
+f = setTooltipFrames()[1]
+check("56 no stat changes line", joined(f) == "|cffffffffItem 200|r / No stat changes", joined(f))
+
+-- 57. Never-seen item: no SetItemByID, no note; uncached shows a placeholder until info arrives
+sets = { { id = 1, name = "Far", ids = { [5] = 400 } } }
+fire("EQUIPMENT_SETS_CHANGED"); flushTimers()
+STATS[400] = { RESISTANCE0_NAME = 50 }
+local idCalls57 = calls.SetItemByID
+hover(300)
+f = setTooltipFrames()[1]
+check("57 id item compact", joined(f) == "|cffffffffItem 400|r / +44 Armor" and calls.SetItemByID == idCalls57, joined(f))
+uncached[400] = true
+SC.RefreshCompare(); hover(300)
+f = setTooltipFrames()[1]
+check("57 uncached: placeholder", joined(f) == "Retrieving item information", joined(f))
+uncached[400] = nil
+fire("GET_ITEM_INFO_RECEIVED", 400)
+f = setTooltipFrames()[1]
+check("57 name appears once info arrives", joined(f) == "|cffffffffItem 400|r / +44 Armor", joined(f))
+
+-- 58. Saved (enchanted) copy: name and deltas from the saved link, no SetHyperlink
+savedReset()
+equipped[5] = 100
+sets = { { id = 1, name = "Tank", ids = { [5] = 200 }, locs = { [5] = LOC_BANK_TAB(2, 6) } } }
+SetComparerCharDB.savedItems[1] = { [5] = { link = ENCH200B, seen = now } }
+bankReadable = false
+STATS[300] = { RESISTANCE0_NAME = 94, ITEM_MOD_STAMINA_SHORT = 2 }
+STATS[ENCH200B] = { RESISTANCE0_NAME = 117, ITEM_MOD_STAMINA_SHORT = 10 }
+local hl58 = calls.SetHyperlink
+SC.RefreshCompare(); hover(300)
+f = setTooltipFrames()[1]
+check("58 saved copy compact", joined(f) == "|cff1eff00Item 200|r / -23 Armor / -8 Stamina" and calls.SetHyperlink == hl58, joined(f))
+
+-- 59. Stats off: name only; greyed with comparison off; unticking restores full frames
+statsCb:ToggleClick()
+hover(300)
+f = setTooltipFrames()[1]
+check("59 stats off: name only", joined(f) == "|cff1eff00Item 200|r", joined(f))
+statsCb:ToggleClick()
+compareCb:ToggleClick()
+check("59 greyed out when comparison off", compactCb:IsEnabled() == false and compactCb.label.color[1] == 0.5)
+compareCb:ToggleClick()
+check("59 enabled again", compactCb:IsEnabled() == true)
+compactCb:ToggleClick()
+hover(300)
+f = setTooltipFrames()[1]
+check("59 compact off: full frame again", SetComparerDB.compactFrames == false and f and f.content == "link:" .. ENCH200B, f and f.content)
+bankReadable = true
+
 io.write(("\n%d passed, %d failed\n"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)
