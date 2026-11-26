@@ -1,8 +1,11 @@
 ## Interface: 16001
 ## Title: SetComparer
-## Notes: Adds comparison tooltips for your saved Equipment Manager sets when shift-hovering an item.
+## Notes: Adds comparison tooltips for your saved Equipment Manager sets when shift-hovering an item, and buttons to move a set's items to and from the bank. Options: /setcompare options
 ## Author: Pardaleco
 ## Version: 1.0.0
 ## SavedVariables: SetComparerDB
+## SavedVariablesPerCharacter: SetComparerCharDB
 
 SetComparer.lua
+SetBank.lua
+Options.lua

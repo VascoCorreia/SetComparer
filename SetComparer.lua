@@ -2,7 +2,7 @@
 -- When the default item comparison is shown (shift-hover), adds one extra tooltip per
 -- saved Equipment Manager set, showing that set's item for the same slot.
 
-local ADDON_NAME = ...
+local ADDON_NAME, SetComparer = ...
 
 local band, rshift, lshift = bit.band, bit.rshift, bit.lshift
 
@@ -92,6 +92,11 @@ local function DecodeLocation(loc)
 	end
 	return isPlayer, isBank, false, rest, nil
 end
+
+-- Shared with the addon's other files (SetBank.lua)
+SetComparer.DecodeLocation = DecodeLocation
+SetComparer.GetContainerLink = GetContainerLink
+SetComparer.LinkItemID = LinkItemID
 
 -- Work out where a set's item for an inventory slot lives.
 -- Returns nil when the set has nothing (or ignores) that slot, else a table:
@@ -243,6 +248,28 @@ end
 
 local dataVersion = 0
 
+-- Settings helpers (used by Options.lua and SetBank.lua)
+function SetComparer.IsSetCompared(setID)
+	local hidden = SetComparerCharDB and SetComparerCharDB.hiddenSets
+	return not (hidden and hidden[setID])
+end
+
+function SetComparer.SetSetCompared(setID, compared)
+	SetComparerCharDB.hiddenSets[setID] = (not compared) or nil
+	SetComparer.RefreshCompare()
+end
+
+function SetComparer.SetCompareEnabled(enabled)
+	SetComparerDB.enabled = enabled and true or false
+	SetComparer.RefreshCompare()
+end
+
+-- Forget what is displayed so the next shift-hover rebuilds with the current settings
+function SetComparer.RefreshCompare()
+	dataVersion = dataVersion + 1
+	HideAll()
+end
+
 local function Update(owner)
 	if not (SetComparerDB and SetComparerDB.enabled) then return end
 	if not owner or isOurs[owner] or not owner.GetItem then return end
@@ -267,7 +294,7 @@ local function Update(owner)
 	local entries, byItem = {}, {}
 	for _, setID in ipairs(C_EquipmentSet.GetEquipmentSetIDs() or {}) do
 		local setName = C_EquipmentSet.GetEquipmentSetInfo(setID)
-		for _, slot in ipairs(slots) do
+		for _, slot in ipairs(SetComparer.IsSetCompared(setID) and slots or {}) do
 			local item = ResolveSetItem(setID, slot)
 			local skip = not item
 			if item then
@@ -390,6 +417,10 @@ events:SetScript("OnEvent", function(_, event, arg1)
 		if arg1 == ADDON_NAME then
 			SetComparerDB = SetComparerDB or {}
 			if SetComparerDB.enabled == nil then SetComparerDB.enabled = true end
+			if SetComparerDB.showBankButtons == nil then SetComparerDB.showBankButtons = true end
+			-- Per character: set IDs are per character. Sets not listed here are compared.
+			SetComparerCharDB = SetComparerCharDB or {}
+			SetComparerCharDB.hiddenSets = SetComparerCharDB.hiddenSets or {}
 		end
 	elseif event == "MODIFIER_STATE_CHANGED" then
 		if pool[1] and pool[1]:IsShown() and not IsModifiedClick("COMPAREITEMS")
@@ -412,8 +443,17 @@ end)
 ---------------------------------------------------------------------------
 
 SLASH_SETCOMPARER1 = "/setcompare"
-SlashCmdList.SETCOMPARER = function()
-	SetComparerDB.enabled = not SetComparerDB.enabled
-	if not SetComparerDB.enabled then HideAll() end
-	print("|cffffd100SetComparer|r set comparison " .. (SetComparerDB.enabled and "|cff00ff00enabled|r" or "|cffff0000disabled|r"))
+SlashCmdList.SETCOMPARER = function(msg)
+	msg = (msg or ""):lower()
+	if msg:match("^%s*toggle") then
+		-- Quick on/off without opening the panel
+		SetComparer.SetCompareEnabled(not SetComparerDB.enabled)
+		if SetComparer.RefreshOptions then SetComparer.RefreshOptions() end
+		print("|cffffd100SetComparer|r set comparison " .. (SetComparerDB.enabled and "|cff00ff00enabled|r" or "|cffff0000disabled|r"))
+		return
+	end
+	-- /setcompare (and anything else) opens the options panel
+	if SetComparer.OpenOptions then
+		SetComparer.OpenOptions()
+	end
 end
